@@ -1,0 +1,205 @@
+---
+title: "4911 Practice Project"
+author: "Peike Wang"
+date: "2023/1/10"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r message=FALSE}
+library(nycflights13)
+library(tidyverse)
+library(data.table)
+library(dplyr)
+library(glmnet)
+```
+
+```{r}
+data(flights)
+data("weather")
+```
+
+
+# Clean Data
+
+Firstly, I replace the NA in Departure Delay with 2000. I also focus on the departure delay which delay more than 30 minutes. And I drop the NA in the Weather Data
+
+```{r}
+Na2000 <- replace_na(flights$dep_delay, 2000)
+flights <- flights %>% mutate(dep_delay = Na2000)
+delay_flights <- filter(flights, dep_delay > 30)
+weather <- drop_na(weather)
+```
+
+# Wind Direction
+
+Secondly, I want to focus on the wind direction. I divide the flights data into canceled flights and delayed flights and combine the weather data to each of them. 
+
+```{r}
+cancel <- filter(delay_flights, dep_delay == 2000)
+delay_flights <- filter(delay_flights, dep_delay != 2000)
+```
+
+```{r}
+combine_delay <- merge(delay_flights, weather, by = c("time_hour", "origin"))
+combine_cancel <- merge(cancel, weather, by = c("time_hour", "origin"))
+```
+
+I hist the frequency of delayed flights and canceled flight in every wind direction degrees. The result is pretty surprise that their frequency is very high between 250 and 310 degrees(which is West and Northwest wind). To confirm whether this wind direction is more dangerous to flights or it just appears frequently, I need more plots.
+
+```{r}
+hist(combine_delay$wind_dir, col="blue", xlab="Wind Direction", ylab="Frequency", main="Departure Delayed and Canceled Flight vs. Wind Direction")
+hist(combine_cancel$wind_dir, col="red", add=TRUE)
+
+legend('topright', c('canceled', 'delayed'), fill=c('red', 'blue'))
+```
+
+I try to plot the delayed minutes versus the wind direction. When I try to fit the linear model to this model, the professor reminds me that the degree of 359 and degree of 1 are basically the same wind direction. So the wind direction cannot fit linear model, it has to be a curve. After I plot it, we can see that there is a decrease curve in West and North West wind.
+
+```{r}
+combine <- merge(flights, weather, by = c("time_hour", "origin"))
+```
+
+```{r}
+combine_wind_cancel <- combine %>%
+  group_by(wind_dir) %>%
+  mutate(perc = (sum(dep_delay == 2000) / sum(dep_delay > -1000)))
+```
+
+```{r}
+combine_wind_delay <- combine %>%
+  group_by(wind_dir) %>%
+  mutate(perc = (sum(dep_delay > 30) / sum(dep_delay > -1000)))
+```
+
+For further confirmation, I plot percentages of canceled flights and delayed flights in each wind direction degrees. This time, we can clearly see that the percentages decrease a lot in West and Northwest wind. So we can confirm that the frequency of canceled and delayed flight in West and Northwest is high because it frequently blow in New York's airports. Also it provide safer flights for the plane. On the contrast, flights are more possible to be canceled or delayed in the East and Northeast wind.
+
+```{r}
+p <- ggplot() +
+       geom_point(data=combine_wind_cancel, aes(x=wind_dir, y=perc, color="canceled flights"), size=1) + geom_smooth(data=combine_wind_cancel, aes(x=wind_dir, y=perc, color="canceled flights"),method=NULL) +
+       geom_point(data=combine_wind_delay, aes(x=wind_dir, y=perc, color="delayed flights"), size=1) + geom_smooth(data=combine_wind_delay, aes(x=wind_dir, y=perc, color="delayed flights"),method=NULL)
+p
+```
+
+### STATEMENT for Wind Direction: Since the frequency of delayed and canceled flights in 250 - 310 Wind Direction (West Wind and North West Wind) is much higher, but the delayed minutes and percentage of delayed and canceled flights are lower, we can conclude that the New York's airports usually blow West and North West Wind. And from the plots of delayed minutes and percentage, we can conclude that the planes usually flight well and less delayed in West and Northwest Wind.
+
+
+# Atmospheric Pressure
+
+Then I want to focus on the atmospheric pressure. As we know, the high air pressure usually brings sunny sky and calm weather and the low air pressure usually brings active weather, like rains or thunderstorm. Like what I explored for the wind direction, I plot the frequency of delayed flights and canceled flights. We can see that it seems to be normal distribution and the frequency is very high in the pressure of 1010 and 1020 millibars(which is the typical sea-level pressure). I can reasonably speculate that this is because New York is a coastal city and the typical sea-level pressure appears a lot in New York's air ports.
+
+```{r}
+hist(combine_delay$pressure, col="blue", xlab="Pressure", ylab="Frequency of Departure Delayed Flights", main="Departure Delayed Flight vs. Pressure")
+hist(combine_cancel$pressure, col="red", add=TRUE)
+
+legend('topright', c('canceled', 'delayed'), fill=c('red', 'blue'))
+```
+
+Then I also plot the delayed minutes versus atmospheric pressure. It looks like normal distribution as well, but when I draw a smooth line, it shows a curve which decrease first and then increase. The average delayed minutes seems to be lower in the typical sea-level pressure.
+
+```{r}
+combine_pressure_cancel <- combine %>%
+  group_by(pressure) %>%
+  mutate(perc = (sum(dep_delay == 2000) / sum(dep_delay > -1000)))
+```
+
+```{r}
+combine_pressure_delay <- combine %>%
+  group_by(pressure) %>%
+  mutate(perc = (sum(dep_delay > 30) / sum(dep_delay > -1000)))
+```
+
+For further confirmation, I plot the percentages of delayed flight and canceled flights in each millibars of atmospheric pressure. It clearly shows that the probability of cancellation and delay is extremely high in the pressure around 1000 millibars and also around 1035 millibars. Therefore, while the thunderstorm caused by low atmospheric pressure affect plane's safe flights, some typical weather conditions in high atmospheric pressure also cause dangerous flights for planes.
+
+```{r}
+p2 <- ggplot() +
+       geom_point(data=combine_pressure_cancel, aes(x=pressure, y=perc, color="canceled flights"), size=1) +
+       geom_point(data=combine_pressure_delay, aes(x=pressure, y=perc, color="delayed flights"), size=1)
+p2
+```
+
+### STATEMENT for Atmospheric Pressure: While the frequency of delayed and canceled flights in the pressure between 1010 and 1020 millibars(typical sea-level pressure) is higher, the average delayed minutes and percentage of delayed and canceled flights in that pressure are lower. So we can conclude that the typical sea-level pressure normally appears is New York's airports. However, the percentage of delayed and canceled flights with low pressure and high pressure is much higher, so we can also conclude that the low and high pressure affect the plane's safe flight a lot.
+
+
+# Machine Learning
+
+I want to use weather data to predict whether the flight will be delayed. I define the flights delayed more than 30 minutes as delayed flight(enter 1 in the dep_delay column if it's delayed flight, otherwise enter 0). From the correlation table below, the correlations between predictors in weather data and response are pretty low. So besides logistic regression, I also choose LASSO and Ridge Regression because they can select predictors by themselves. 
+
+```{r}
+only_dep <- select(flights, time_hour, origin, dep_delay)
+dep_weather <- merge(only_dep, weather, by = c("time_hour", "origin"))
+```
+
+```{r}
+dep_weather <- select(dep_weather, -1, -2, -4:-7)
+```
+
+## Logistic Regression Model
+
+```{r}
+dep_weather$dep_delay <- ifelse(dep_weather$dep_delay < 30, 0, dep_weather$dep_delay)
+dep_weather$dep_delay <- ifelse(dep_weather$dep_delay >= 30, 1, dep_weather$dep_delay)
+```
+
+```{r}
+corr <- cor(dep_weather)
+round(corr, 2)
+```
+
+```{r}
+set.seed(4911)
+sample <- sample(c(TRUE, FALSE), nrow(dep_weather), replace=TRUE, prob=c(0.5, 0.5))
+train <- dep_weather[sample, ]
+test <- dep_weather[!sample, ]
+```
+
+```{r}
+lr <- glm(dep_delay~., data = train, family = "binomial")
+pred.lr = predict(lr, test, type="response")
+pred.class <- ifelse(pred.lr > 0.5, 1, 0)
+error = sum((test$dep_delay - pred.class)^2)
+accuracy = (nrow(test)-error) / nrow(test)
+accuracy
+```
+
+## LASSO and RR
+
+```{r}
+x_train = model.matrix(dep_delay~.,train)[,-1]
+y_train = train$dep_delay
+x_test = model.matrix(dep_delay~.,test)[,-1]
+y_test = test$dep_delay
+```
+
+```{r}
+set.seed(4911)
+ridge.cv = cv.glmnet(x_train,y_train,alpha=0)
+lambda.cv = ridge.cv$lambda.min
+
+lasso.cv = cv.glmnet(x_train,y_train,alpha=1)
+lambda1.cv = lasso.cv$lambda.min
+```
+
+```{r}
+fit.ridge = glmnet(x_train,y_train,alpha=0,lambda=lambda.cv)
+pred.ridge = predict(fit.ridge,newx=x_test)
+ridge.class <- ifelse(pred.ridge > 0.5, 1, 0)
+
+fit.lasso = glmnet(x_train,y_train,alpha=1,lambda=lambda1.cv)
+pred.lasso = predict(fit.lasso,newx=x_test)
+lasso.class <- ifelse(pred.lasso > 0.5, 1, 0)
+```
+
+```{r}
+error = sum((y_test - ridge.class)^2)
+accuracyR = (nrow(test)-error) / nrow(test)
+accuracyR
+
+error = sum((y_test - lasso.class)^2)
+accuracyL = (nrow(test)-error) / nrow(test)
+accuracyL
+```
+
+### STATEMENT for Machine Learning: I get approximately accuracy of 82.6% for both three models, which is pretty satisfied. However, if I define a flight delayed by more than 60 minutes as a delayed flight(enter 1 in dep_delay if it only delay more than 60 minutes), the accuracy of these three models will increase to be approximately 90%. So I can conclude that using weather condition data to predict whether the flights will be delayed is a very good choice. And also we can conclude that the weather is higher correlated to longer delay. The airports officials can use the model and their newest weather data to predict the delayed flight information for that day.
+
